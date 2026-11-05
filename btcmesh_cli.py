@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 import uuid
 import os
-from core.config_loader import get_meshtastic_serial_port
 from core.logger_setup import setup_logger
 import time
-from pubsub import pub
 import queue
 
 
@@ -17,7 +15,7 @@ def is_valid_hex(s):
         return False
 
 
-CHUNK_SIZE = 170  # hex chars (100 bytes)
+CHUNK_SIZE = 170  # hex chars (85 bytes). Default when no transport is connected.
 
 
 def chunk_transaction(tx_hex, chunk_size):
@@ -84,120 +82,121 @@ MAX_RETRIES = 3
 _message_queue = None
 _current_session_id = None
 _expected_sender_node_id = None  # To filter messages from the correct server
+_active_transport = None  # Used to compare node IDs in the transport's format
 
 
-def on_receive_text_message_cli(packet, interface):
-    """Callback for Meshtastic receive events in CLI."""
+def on_receive_text_message_cli(sender_node_id, message_text):
+    """Transport text handler for the CLI: queue replies for the current session."""
     global _message_queue, _current_session_id, _expected_sender_node_id
     try:
         if _message_queue is None or _current_session_id is None:
             # Not yet initialized to receive for a session
             return
 
-        if "decoded" in packet and packet["decoded"]["portnum"] == "TEXT_MESSAGE_APP":
-            message_bytes = packet["decoded"]["payload"]
-            message_text = message_bytes.decode("utf-8")
-            sender_node_id = packet.get("fromId")
+        if _active_transport is not None:
+            from_expected = _active_transport.same_node(
+                sender_node_id, _expected_sender_node_id
+            )
+        else:
+            from_expected = sender_node_id == _expected_sender_node_id
 
-            # Filter messages: must be from the expected server and for the current session
-            if sender_node_id == _expected_sender_node_id:
-                msg_parts = message_text.split("|")
-                if len(msg_parts) > 1 and msg_parts[1] == _current_session_id:
-                    cli_logger.info(
-                        f"CLI received relevant message for session {_current_session_id} from {sender_node_id}: '{message_text}'"
-                    )
-                    _message_queue.put(message_text)
-                elif len(msg_parts) > 1 and msg_parts[1] != _current_session_id:
-                    cli_logger.debug(
-                        f"CLI received message for different session ID. Expected: '{_current_session_id}', Got: '{msg_parts[1]}'. Msg: '{message_text}'"
-                    )
-                else:  # Message for our session but not parsable for session ID, or from wrong sender
-                    cli_logger.debug(
-                        f"CLI received message from {sender_node_id} but not for current session ID or malformed for session check. Msg: '{message_text}'"
-                    )
-            elif sender_node_id != _expected_sender_node_id:
-                # Log if it's a text message but not from the expected sender
-                cli_logger.debug(
-                    f"CLI received text message from unexpected sender {sender_node_id} (expected {_expected_sender_node_id}). Msg: '{message_text}'"
+        # Filter messages: must be from the expected server and for the current session
+        if from_expected:
+            msg_parts = message_text.split("|")
+            if len(msg_parts) > 1 and msg_parts[1] == _current_session_id:
+                cli_logger.info(
+                    f"CLI received relevant message for session {_current_session_id} from {sender_node_id}: '{message_text}'"
                 )
+                _message_queue.put(message_text)
+            elif len(msg_parts) > 1 and msg_parts[1] != _current_session_id:
+                cli_logger.debug(
+                    f"CLI received message for different session ID. Expected: '{_current_session_id}', Got: '{msg_parts[1]}'. Msg: '{message_text}'"
+                )
+            else:  # Message for our session but not parsable for session ID
+                cli_logger.debug(
+                    f"CLI received message from {sender_node_id} but not for current session ID or malformed for session check. Msg: '{message_text}'"
+                )
+        else:
+            # Log if it's a text message but not from the expected sender
+            cli_logger.debug(
+                f"CLI received text message from unexpected sender {sender_node_id} (expected {_expected_sender_node_id}). Msg: '{message_text}'"
+            )
 
-    except UnicodeDecodeError:
-        cli_logger.warning(
-            f"CLI could not decode payload: {packet['decoded']['payload']}"
-        )
     except Exception as e:
         cli_logger.error(
             f"CLI error in on_receive_text_message_cli: {e}", exc_info=True
         )
 
 
-def initialize_meshtastic_interface_cli(port=None):
+def _drop_queued_chunk_acks(q):
+    """Remove BTC_CHUNK_ACK messages from q, keeping all others in order."""
+    keep = []
+    while True:
+        try:
+            msg = q.get_nowait()
+        except queue.Empty:
+            break
+        if not msg.startswith("BTC_CHUNK_ACK|"):
+            keep.append(msg)
+    for msg in keep:
+        q.put(msg)
+
+
+def initialize_transport_cli(port=None, transport_type=None):
     """
-    Initializes and returns a Meshtastic SerialInterface for CLI use.
+    Connects to the configured radio for CLI use.
     Logs all attempts and errors to both stdout and the CLI log file.
     Args:
         port: Optional override for serial port.
+        transport_type: Optional override for BTCMESH_TRANSPORT.
     Returns:
-        Meshtastic SerialInterface instance if successful, None otherwise.
+        A connected Transport if successful, None otherwise.
     """
-    serial_port_to_use = port if port is not None else get_meshtastic_serial_port()
-    try:
-        import meshtastic.serial_interface
+    from core.transport import connect_transport
 
-        log_port_info = (
-            f" on port {serial_port_to_use}" if serial_port_to_use else " (auto-detect)"
-        )
-        cli_logger.info(
-            f"Attempting to initialize Meshtastic interface{log_port_info}..."
-        )
-        iface = (
-            meshtastic.serial_interface.SerialInterface(devPath=serial_port_to_use)
-            if serial_port_to_use
-            else meshtastic.serial_interface.SerialInterface()
-        )
-        node_num_display = "Unknown Node Num"
-        if (
-            hasattr(iface, "myInfo")
-            and iface.myInfo
-            and hasattr(iface.myInfo, "my_node_num")
-        ):
-            node_num_display = str(iface.myInfo.my_node_num)
-        cli_logger.info(
-            f"Meshtastic interface initialized successfully. Device: {getattr(iface, 'devPath', '?')}, My Node Num: {node_num_display}"
-        )
-        return iface
-    except ImportError:
-        cli_logger.error(
-            "Meshtastic library not found. Please install it (e.g., pip install meshtastic)."
-        )
-        return None
-    except Exception as e:
-        cli_logger.error(
-            f"An unexpected error occurred during Meshtastic initialization: {e}",
-            exc_info=True,
-        )
-        return None
+    return connect_transport(kind=transport_type, port=port, logger=cli_logger)
 
 
 def cli_main(
-    args=None, injected_iface=None, injected_logger=None, injected_message_receiver=None
+    args=None,
+    injected_transport=None,
+    injected_logger=None,
+    injected_message_receiver=None,
 ):
-    """Main CLI logic for sending transactions."""
+    """Main CLI logic for sending transactions.
+
+    Args:
+        args: Parsed arguments (destination, tx, dry_run, optional session_id).
+        injected_transport: Already connected Transport (GUI, tests). When
+            omitted, the CLI connects and closes its own.
+        injected_logger: Logger to use instead of the CLI file logger.
+        injected_message_receiver: Test hook, a generator factory yielding replies.
+    """
     import argparse
     import sys
     import re
 
-    global _message_queue, _current_session_id, _expected_sender_node_id  # Ensure globals are accessible
+    global _message_queue, _current_session_id, _expected_sender_node_id, _active_transport
 
     if args is None:
         parser = argparse.ArgumentParser(
-            description="Send a raw Bitcoin transaction via Meshtastic LoRa relay."
+            description="Send a raw Bitcoin transaction via a LoRa mesh relay."
         )
         parser.add_argument(
             "-d",
             "--destination",
             required=True,
-            help="Destination node ID (e.g., !abcdef12)",
+            help="Destination node ID of the relay (e.g. !abcdef12 for Meshtastic)",
+        )
+        parser.add_argument(
+            "--transport",
+            default=None,
+            help="Radio transport to use (default: BTCMESH_TRANSPORT or meshtastic)",
+        )
+        parser.add_argument(
+            "--port",
+            default=None,
+            help="Serial port of the radio (default: from .env or auto-detect)",
         )
         parser.add_argument(
             "-tx", "--tx", required=True, help="Raw transaction hex string"
@@ -221,33 +220,48 @@ def cli_main(
         print(f"  Destination: {args.destination}")
         print(f"  Raw TX Hex: {args.tx}")
         session_id = getattr(args, "session_id", None) or generate_session_id()
-        chunks = chunk_transaction(tx_hex, CHUNK_SIZE)
+        try:
+            from core.transport import get_transport_class
+
+            dry_run_chunk_size = get_transport_class(
+                getattr(args, "transport", None)
+            ).chunk_size
+        except Exception:
+            dry_run_chunk_size = CHUNK_SIZE
+        chunks = chunk_transaction(tx_hex, dry_run_chunk_size)
         total_chunks = len(chunks)
         for i, payload in enumerate(chunks, 1):
             print(f"BTC_TX|{session_id}|{i}/{total_chunks}|{payload}")
         return 0
-    iface = (
-        injected_iface
-        if injected_iface is not None
-        else initialize_meshtastic_interface_cli()
+    transport = (
+        injected_transport
+        if injected_transport is not None
+        else initialize_transport_cli(
+            port=getattr(args, "port", None),
+            transport_type=getattr(args, "transport", None),
+        )
     )
-    if iface is None:
+    if transport is None:
         print(
-            "Failed to initialize Meshtastic interface. See logs for details.",
+            "Failed to initialize radio interface. See logs for details.",
             file=sys.stderr,
         )
         # Make sure logger is available or fallback
         (injected_logger or cli_logger).error(
-            "Failed to initialize Meshtastic interface in cli_main."
+            "Failed to initialize radio interface in cli_main."
         )
-        raise RuntimeError("Failed to initialize Meshtastic interface")
+        raise RuntimeError("Failed to initialize radio interface")
+    _active_transport = transport
 
     _current_session_id = (
         getattr(args, "session_id", None) or generate_session_id()
     )  # Set global session ID
     _expected_sender_node_id = args.destination  # Set global expected sender
 
-    chunks = chunk_transaction(tx_hex, CHUNK_SIZE)
+    chunk_size = getattr(transport, "chunk_size", None)
+    if not isinstance(chunk_size, int) or chunk_size <= 0:
+        chunk_size = CHUNK_SIZE
+    chunks = chunk_transaction(tx_hex, chunk_size)
     total_chunks = len(chunks)
 
     # Determine if we are using injected receiver or setting up our own
@@ -259,9 +273,9 @@ def cli_main(
         )
     elif not args.dry_run:  # Standard execution path, set up pubsub
         _message_queue = queue.Queue()
-        pub.subscribe(on_receive_text_message_cli, "meshtastic.receive")
+        transport.subscribe(on_receive_text_message_cli)
         logger.info(
-            f"CLI Subscribed to Meshtastic messages for session {_current_session_id}. Expecting replies from {args.destination}"
+            f"CLI Subscribed to {transport.name} messages for session {_current_session_id}. Expecting replies from {args.destination}"
         )
         message_iterator = None  # We'll use queue.get() instead
     else:  # Dry run or other unhandled case
@@ -290,7 +304,7 @@ def cli_main(
                 while current_retries < MAX_RETRIES:
                     msg_to_send = f"BTC_TX|{_current_session_id}|{chunk_num}/{total_chunks}|{payload}"
                     try:
-                        iface.sendText(text=msg_to_send, destinationId=args.destination)
+                        transport.send_text(args.destination, msg_to_send)
                         print(
                             f"Sent chunk {chunk_num}/{total_chunks} for session {_current_session_id} to {args.destination}"
                         )
@@ -313,9 +327,10 @@ def cli_main(
                             received_msg_text = _message_queue.get(
                                 block=True, timeout=ACK_TIMEOUT
                             )
-                            # Clear queue for next message if multiple arrived
-                            while not _message_queue.empty():
-                                _message_queue.get_nowait()
+                            # Drop duplicate chunk ACKs (from retransmissions),
+                            # but keep a final BTC_ACK/BTC_NACK that may already
+                            # have arrived right behind ALL_CHUNKS_RECEIVED.
+                            _drop_queued_chunk_acks(_message_queue)
 
                     except StopIteration:  # Only for injected_message_receiver
                         logger.warning(
@@ -349,7 +364,7 @@ def cli_main(
                             logger.warning(
                                 f"Retrying chunk {chunk_num}/{total_chunks} (attempt {current_retries + 1} of {MAX_RETRIES}) for session {_current_session_id} due to timeout."
                             )
-                            # No need to sleep here as sendText will take time, and ACK_TIMEOUT is the primary wait.
+                            # No need to sleep here as send_text will take time, and ACK_TIMEOUT is the primary wait.
                             continue  # Retry sending the same chunk
                         else:
                             errmsg = f"Aborting session {_current_session_id} after {MAX_RETRIES} failed attempts (timeout) for chunk {chunk_num}/{total_chunks}."
@@ -616,31 +631,27 @@ def cli_main(
             print(f"An unexpected error occurred: {e}")
             return 1  # Generic error
         finally:
-            if not use_injected_receiver and not args.dry_run:  # Cleanup for pubsub
+            if not use_injected_receiver and not args.dry_run:
                 logger.info(
-                    f"CLI Unsubscribing from Meshtastic messages for session {_current_session_id}."
+                    f"CLI Unsubscribing from {transport.name} messages for session {_current_session_id}."
                 )
                 try:
-                    # It's possible pubsub or the specific listener isn't robust to multiple unsubscribes
-                    # or unsubscribing if never subscribed, though typically it should be.
-                    # Adding a check or guard if issues arise.
-                    pub.unsubscribe(on_receive_text_message_cli, "meshtastic.receive")
-                except Exception as e_unsub:  # Broad catch for unsubscription errors
+                    transport.unsubscribe(on_receive_text_message_cli)
+                except Exception as e_unsub:
                     logger.error(
-                        f"Error during pub.unsubscribe for session {_current_session_id}: {e_unsub}",
+                        f"Error during unsubscribe for session {_current_session_id}: {e_unsub}",
                         exc_info=True,
                     )
-            if (
-                iface and hasattr(iface, "close") and not injected_iface
-            ):  # Close iface if we opened it
+            if not injected_transport:  # Close the transport if we opened it
                 logger.info(
-                    f"CLI closing Meshtastic interface for session {_current_session_id}."
+                    f"CLI closing {transport.name} interface for session {_current_session_id}."
                 )
-                iface.close()
+                transport.close()
             # Reset globals for potential re-entry (e.g. in tests, though not typical for CLI)
             _message_queue = None
             _current_session_id = None
             _expected_sender_node_id = None
+            _active_transport = None
             logger.info(
                 f"CLI main execution finished for session (was {_current_session_id})."
             )

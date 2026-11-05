@@ -292,7 +292,7 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
     def test_multi_chunk_transaction_sends_all(self):
         dest = "!abcdef12"
         tx_hex = "a" * 450  # 3 chunks
-        self.mock_iface.sendText.return_value = None
+        self.mock_iface.send_text.return_value = None
         args = self.make_args(dest, tx_hex)
         session_id = "testsession_multi"
         args.session_id = session_id
@@ -306,12 +306,12 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             ret = cli_main(
                 args=args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,
                 injected_message_receiver=message_receiver,
             )
         self.assertEqual(ret, 0)
-        self.assertEqual(self.mock_iface.sendText.call_count, 3)
+        self.assertEqual(self.mock_iface.send_text.call_count, 3)
         self.assert_printed_substring(mock_print, "Sent chunk 1/3 for session")
         self.assert_printed_substring(mock_print, "Sent chunk 2/3 for session")
         self.assert_printed_substring(mock_print, "Sent chunk 3/3 for session")
@@ -327,7 +327,7 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
     def test_single_chunk_transaction_sends_one(self):
         dest = "!abcdef12"
         tx_hex = "b" * 100  # 1 chunk
-        self.mock_iface.sendText.return_value = None
+        self.mock_iface.send_text.return_value = None
         args = self.make_args(dest, tx_hex)
         session_id = "testsession_single"
         args.session_id = session_id
@@ -339,12 +339,12 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             ret = cli_main(
                 args=args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,
                 injected_message_receiver=message_receiver,
             )
         self.assertEqual(ret, 0)
-        self.assertEqual(self.mock_iface.sendText.call_count, 1)
+        self.assertEqual(self.mock_iface.send_text.call_count, 1)
         self.assert_printed_substring(mock_print, "Sent chunk 1/1 for session")
         self.assert_printed_substring(
             mock_print, "All transaction chunks sent for session"
@@ -359,11 +359,11 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
         dest = "!abcdef12"
         tx_hex = "c" * 300  # 2 chunks
 
-        def sendText_side_effect(*args, **kwargs):
+        def send_text_side_effect(*args, **kwargs):
             # Raise on first chunk
             raise Exception("Send failed")
 
-        self.mock_iface.sendText.side_effect = sendText_side_effect
+        self.mock_iface.send_text.side_effect = send_text_side_effect
         args = self.make_args(dest, tx_hex)
 
         def dummy_message_receiver(timeout, session_id):
@@ -373,7 +373,7 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
         with patch("builtins.print") as mock_print, self.assertRaises(Exception):
             cli_main(
                 args=args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,
                 injected_message_receiver=dummy_message_receiver,
             )
@@ -390,7 +390,7 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
     def test_logging_on_all_chunking_and_sending(self):
         dest = "!abcdef12"
         tx_hex = "d" * 340  # 2 chunks
-        self.mock_iface.sendText.return_value = None
+        self.mock_iface.send_text.return_value = None
         args = self.make_args(dest, tx_hex)
         session_id = "testsession_logging"
         args.session_id = session_id
@@ -402,7 +402,7 @@ class TestMeshtasticCliChunkedSendingStory63(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             cli_main(
                 args=args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,
                 injected_message_receiver=message_receiver,
             )
@@ -482,7 +482,7 @@ class TestMeshtasticCliAckNackListeningStory64(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             ret = self.cli_main(
                 args=args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,
                 injected_message_receiver=mock_message_receiver,
             )
@@ -526,7 +526,7 @@ class TestMeshtasticCliAckNackListeningStory64(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             ret = self.cli_main(
                 args=args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,
                 injected_message_receiver=mock_message_receiver,
             )
@@ -572,10 +572,10 @@ class TestCliStopAndWaitARQ(unittest.TestCase):
         self.session_id = generate_session_id()  # Use dynamic session_id
         self.mock_iface = Mock()
         self.sent_chunks = []
-        self.mock_iface.sendText = self.mock_sendText  # Assign method directly
+        self.mock_iface.send_text = self.mock_send_text  # Assign method directly
         self.mock_logger = MagicMock()  # Use MagicMock for the logger
 
-    def mock_sendText(self, text, destinationId):
+    def mock_send_text(self, destinationId, text):
         self.sent_chunks.append((text, destinationId))
 
     def mock_message_receiver(self, timeout, session_id):
@@ -600,7 +600,7 @@ class TestCliStopAndWaitARQ(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             result = self.cli_main(
                 args=Args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,  # Pass the mock_logger
                 injected_message_receiver=self.mock_message_receiver,
             )
@@ -633,7 +633,7 @@ class TestCliNackAndAbortHandling(unittest.TestCase):
         self.session_id = "testsession456"
         self.sent_chunks = []
         self.mock_iface = Mock()
-        self.mock_iface.sendText = self.mock_sendText
+        self.mock_iface.send_text = self.mock_send_text
         self.mock_logger = MagicMock()
 
         # Messages used by tests in this class
@@ -648,7 +648,7 @@ class TestCliNackAndAbortHandling(unittest.TestCase):
             f"BTC_ACK|{self.session_id}|SUCCESS|TXID:final_nack_handling_test"
         )
 
-    def mock_sendText(self, text, destinationId):
+    def mock_send_text(self, destinationId, text):
         self.sent_chunks.append((text, destinationId))
 
     @unittest.skip("Temporarily skipped")
@@ -677,7 +677,7 @@ class TestCliNackAndAbortHandling(unittest.TestCase):
         with patch("builtins.print") as mock_print, self.assertRaises(SystemExit) as cm:
             self.cli_main(
                 args=Args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_logger=self.mock_logger,
                 injected_message_receiver=message_receiver,
             )
@@ -721,10 +721,10 @@ class TestCliTimeoutAndRetriesOnNoAck(unittest.TestCase):
         self.session_id = generate_session_id()
         self.mock_iface = Mock()
         self.sent_chunks = []
-        self.mock_iface.sendText = self.mock_sendText
+        self.mock_iface.send_text = self.mock_send_text
         self.mock_logger = Mock()
 
-    def mock_sendText(self, text, destinationId):
+    def mock_send_text(self, destinationId, text):
         self.sent_chunks.append((text, destinationId))
 
     @unittest.skip("Temporarily skipped")
@@ -747,7 +747,7 @@ class TestCliTimeoutAndRetriesOnNoAck(unittest.TestCase):
         with patch("builtins.print") as mock_print, self.assertRaises(SystemExit) as cm:
             self.cli_main(
                 args=Args,
-                injected_iface=self.mock_iface,
+                injected_transport=self.mock_iface,
                 injected_message_receiver=message_receiver,
             )
         self.assertEqual(len(self.sent_chunks), 3)  # 3 retries
@@ -792,7 +792,7 @@ class TestCliTimeoutAndRetriesOnNoAck(unittest.TestCase):
             try:
                 ret = self.cli_main(
                     args=Args,
-                    injected_iface=self.mock_iface,
+                    injected_transport=self.mock_iface,
                     injected_logger=self.mock_logger,
                     injected_message_receiver=message_receiver,
                 )
@@ -836,10 +836,10 @@ class TestDryRunWithoutMeshtasticStory65(unittest.TestCase):
         tx_hex = "deadbeefcafebabe"
         Args = type("Args", (), {"destination": dest, "tx": tx_hex, "dry_run": True})
 
-        # Patch initialize_meshtastic_interface_cli to track if it's called
+        # Patch initialize_transport_cli to track if it's called
         # (and silence prints to keep output clean)
         with patch(
-            "btcmesh_cli.initialize_meshtastic_interface_cli"
+            "btcmesh_cli.initialize_transport_cli"
         ) as mock_init_meshtastic, patch("builtins.print"):
             code = cli_main(args=Args)
 

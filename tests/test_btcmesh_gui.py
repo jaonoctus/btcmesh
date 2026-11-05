@@ -136,7 +136,6 @@ from btcmesh_gui import (
     process_result,
     validate_send_inputs,
     ResultAction,
-    scan_meshtastic_devices,
     NO_DEVICES_TEXT,
     SCANNING_TEXT,
     NO_NODES_TEXT,
@@ -150,6 +149,7 @@ from btcmesh_gui import (
     STATE_CONNECTION_FAILED,
     STATE_CONNECTION_ERROR,
 )
+from core.meshtastic_utils import scan_meshtastic_devices
 
 
 # =============================================================================
@@ -322,7 +322,7 @@ class TestConnectionStatusStory101(unittest.TestCase):
 
         self.assertEqual(action.connection_text, 'Meshtastic: Connected (!abc123)')
         self.assertEqual(action.connection_color, COLOR_SUCCESS)
-        self.assertEqual(action.store_iface, mock_iface)
+        self.assertEqual(action.store_transport, mock_iface)
         self.assertEqual(len(action.log_messages), 1)
         self.assertIn('Connected to Meshtastic device: !abc123', action.log_messages[0][0])
 
@@ -476,7 +476,7 @@ class TestStatusLogStory102(unittest.TestCase):
         self.assertEqual(action.log_messages, [])
         self.assertFalse(action.stop_sending)
         self.assertIsNone(action.show_success_popup)
-        self.assertIsNone(action.store_iface)
+        self.assertIsNone(action.store_transport)
 
     def test_result_action_log_messages_mutable_default(self):
         """Given two ResultAction instances, Then they have separate log_messages lists."""
@@ -751,7 +751,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_returns_empty_list_when_no_nodes(self):
         """Given interface has no nodes, Then returns empty list."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         mock_iface = unittest.mock.MagicMock()
         mock_iface.nodes = {}
         mock_iface.myInfo.my_node_num = 12345678
@@ -762,7 +762,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_returns_empty_list_when_nodes_is_none(self):
         """Given interface.nodes is None, Then returns empty list."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         mock_iface = unittest.mock.MagicMock()
         mock_iface.nodes = None
         mock_iface.myInfo.my_node_num = 12345678
@@ -773,7 +773,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_extracts_node_info(self):
         """Given interface has nodes, Then extracts id, name, lastHeard."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         import time
         now = int(time.time())
 
@@ -792,7 +792,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_filters_out_own_node(self):
         """Given interface has own node in list, Then filters it out."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         import time
         now = int(time.time())
 
@@ -810,7 +810,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_sorts_by_last_heard_descending(self):
         """Given multiple nodes, Then sorts by lastHeard (most recent first)."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         import time
         now = int(time.time())
 
@@ -831,7 +831,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_uses_short_name_if_no_long_name(self):
         """Given node has no longName, Then uses shortName."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         import time
         now = int(time.time())
 
@@ -855,7 +855,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_handles_missing_user_info(self):
         """Given node has no user info, Then handles gracefully."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         import time
         now = int(time.time())
 
@@ -875,7 +875,7 @@ class TestKnownNodesStory112(unittest.TestCase):
 
     def test_get_known_nodes_includes_is_recent_flag(self):
         """Given nodes with different lastHeard, Then includes is_recent flag."""
-        from btcmesh_gui import get_known_nodes
+        from core.meshtastic_utils import get_known_nodes
         import time
         now = int(time.time())
         hours_24 = 24 * 60 * 60
@@ -961,7 +961,7 @@ class TestDisplayDeviceNameStory113(unittest.TestCase):
 
     def test_get_own_node_name_returns_long_name(self):
         """Given interface has own node with longName, Then returns longName."""
-        from btcmesh_gui import get_own_node_name
+        from core.meshtastic_utils import get_own_node_name
         mock_iface = unittest.mock.MagicMock()
         mock_iface.myInfo.my_node_num = 0xabcd1234
         mock_iface.nodes = {
@@ -974,7 +974,7 @@ class TestDisplayDeviceNameStory113(unittest.TestCase):
 
     def test_get_own_node_name_returns_short_name_if_no_long_name(self):
         """Given interface has own node without longName, Then returns shortName."""
-        from btcmesh_gui import get_own_node_name
+        from core.meshtastic_utils import get_own_node_name
         mock_iface = unittest.mock.MagicMock()
         mock_iface.myInfo.my_node_num = 0xabcd1234
         mock_iface.nodes = {
@@ -993,7 +993,7 @@ class TestDisplayDeviceNameStory113(unittest.TestCase):
 
     def test_get_own_node_name_returns_none_if_no_name(self):
         """Given interface has own node without any name, Then returns None."""
-        from btcmesh_gui import get_own_node_name
+        from core.meshtastic_utils import get_own_node_name
         mock_iface = unittest.mock.MagicMock()
         mock_iface.myInfo.my_node_num = 0xabcd1234
         mock_iface.nodes = {
@@ -1012,7 +1012,7 @@ class TestDisplayDeviceNameStory113(unittest.TestCase):
 
     def test_get_own_node_name_returns_none_if_no_interface(self):
         """Given no interface, Then returns None."""
-        from btcmesh_gui import get_own_node_name
+        from core.meshtastic_utils import get_own_node_name
 
         result = get_own_node_name(None)
 
@@ -1020,7 +1020,7 @@ class TestDisplayDeviceNameStory113(unittest.TestCase):
 
     def test_get_own_node_name_returns_none_if_own_node_not_in_nodes(self):
         """Given own node not in nodes dict, Then returns None."""
-        from btcmesh_gui import get_own_node_name
+        from core.meshtastic_utils import get_own_node_name
         mock_iface = unittest.mock.MagicMock()
         mock_iface.myInfo.my_node_num = 0xabcd1234
         mock_iface.nodes = {}
@@ -1212,6 +1212,32 @@ class TestDisableControlsStory95(unittest.TestCase):
         for result in progress_results:
             action = process_result(result)
             self.assertFalse(action.stop_sending, f"stop_sending should be False for {result}")
+
+
+class TestValidateSendInputsMeshCore(unittest.TestCase):
+    """validate_send_inputs uses the transport's node ID format."""
+
+    def setUp(self):
+        from core.transport.meshcore_transport import MeshCoreTransport
+        self.cls = MeshCoreTransport
+
+    def test_public_key_prefix_is_valid(self):
+        self.assertIsNone(
+            validate_send_inputs("aa11bb22cc33", "aabbccdd", True, transport_class=self.cls)
+        )
+
+    def test_meshtastic_style_id_is_rejected(self):
+        self.assertEqual(
+            validate_send_inputs("!abcdef12", "aabbccdd", True, transport_class=self.cls),
+            self.cls.invalid_node_id_message,
+        )
+
+    def test_own_node_rejected(self):
+        self.assertEqual(
+            validate_send_inputs("AA11BB22CC33", "aabbccdd", True,
+                                 own_node_id="aa11bb22cc33", transport_class=self.cls),
+            "Cannot send to your own node",
+        )
 
 
 if __name__ == '__main__':

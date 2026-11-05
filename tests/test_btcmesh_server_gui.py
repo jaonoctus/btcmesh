@@ -754,6 +754,17 @@ class TestServerLogParsingStory152(unittest.TestCase):
         self.assertEqual(result[0], 'meshtastic_connected')
         self.assertEqual(result[1], {'node_id': '!abcdef12', 'device': '/dev/ttyUSB0'})
 
+    def test_parse_log_detects_meshcore_connected(self):
+        """Given a MeshCore connected log line, Then the node ID is accepted in MeshCore format."""
+        import btcmesh_server_gui
+        from core.transport.meshcore_transport import MeshCoreTransport
+
+        with unittest.mock.patch.object(btcmesh_server_gui, 'TRANSPORT_CLASS', MeshCoreTransport):
+            result = btcmesh_server_gui.parse_log_for_status(
+                "MeshCore interface initialized successfully. Device: /dev/ttyACM0, My Node Num: aa11bb22cc33"
+            )
+        self.assertEqual(result, ('meshtastic_connected', {'node_id': 'aa11bb22cc33', 'device': '/dev/ttyACM0'}))
+
     def test_parse_log_detects_meshtastic_failed(self):
         """Given Meshtastic failed log message, Then parse_log_for_status returns meshtastic_failed."""
         import btcmesh_server_gui

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BTCMesh GUI Client - Kivy-based graphical interface for sending Bitcoin transactions
-via Meshtastic LoRa relay.
+via a LoRa mesh relay (Meshtastic, ...).
 
 This GUI wraps the btcmesh_cli module, displaying its log output in a graphical interface.
 """
@@ -54,12 +54,14 @@ from core.gui_common import (
     create_popup_button,
 )
 
-# Import Meshtastic utilities from core
-from core.meshtastic_utils import (
-    scan_meshtastic_devices,
-    get_own_node_name,
-    get_known_nodes,
+from core.config_loader import get_serial_port
+
+# Radio transport (Meshtastic, ...) selected via BTCMESH_TRANSPORT
+from core.transport import (
     format_node_display,
+    get_transport_class,
+    list_devices,
+    open_transport,
 )
 
 
@@ -81,10 +83,15 @@ MANUAL_ENTRY_TEXT = "Enter manually..."
 # Set window size for desktop testing
 Window.size = (450, 700)
 
+# Radio transport class configured for this run (BTCMESH_TRANSPORT)
+TRANSPORT_CLASS = get_transport_class()
+RADIO_NAME = TRANSPORT_CLASS.name
+
 # Connection states (using ConnectionState from gui_common)
-STATE_DISCONNECTED = ConnectionState('Meshtastic: Not connected', COLOR_DISCONNECTED)
-STATE_CONNECTION_FAILED = ConnectionState('Meshtastic: Connection failed', COLOR_ERROR)
-STATE_CONNECTION_ERROR = ConnectionState('Meshtastic: Error', COLOR_ERROR)
+STATE_DISCONNECTED = ConnectionState(f'{RADIO_NAME}: Not connected', COLOR_DISCONNECTED)
+STATE_CONNECTION_FAILED = ConnectionState(f'{RADIO_NAME}: Connection failed', COLOR_ERROR)
+STATE_CONNECTION_ERROR = ConnectionState(f'{RADIO_NAME}: Error', COLOR_ERROR)
+NOT_CONNECTED_ERROR = f"{RADIO_NAME} not connected"
 
 
 @dataclass
@@ -107,8 +114,8 @@ class ResultAction:
     # Popup actions
     show_success_popup: Optional[str] = None  # txid if success popup should be shown
 
-    # Interface to store (for 'connected' result type)
-    store_iface: Optional[Any] = None
+    # Transport to store (for 'connected' result type)
+    store_transport: Optional[Any] = None
 
 
 def process_result(result: tuple) -> ResultAction:
@@ -127,23 +134,23 @@ def process_result(result: tuple) -> ResultAction:
     result_type = result[0]
 
     if result_type == 'connected':
-        iface = result[1]
+        transport = result[1]
         node_id = result[2]
         node_name = result[3] if len(result) > 3 else None
-        action.store_iface = iface
+        action.store_transport = transport
         if node_name:
-            action.connection_text = f'Meshtastic: Connected - {node_name} ({node_id})'
-            action.log_messages.append((f"Connected to Meshtastic device: {node_name} ({node_id})", COLOR_SUCCESS))
+            action.connection_text = f'{RADIO_NAME}: Connected - {node_name} ({node_id})'
+            action.log_messages.append((f"Connected to {RADIO_NAME} device: {node_name} ({node_id})", COLOR_SUCCESS))
         else:
-            action.connection_text = f'Meshtastic: Connected ({node_id})'
-            action.log_messages.append((f"Connected to Meshtastic device: {node_id}", COLOR_SUCCESS))
+            action.connection_text = f'{RADIO_NAME}: Connected ({node_id})'
+            action.log_messages.append((f"Connected to {RADIO_NAME} device: {node_id}", COLOR_SUCCESS))
         action.connection_color = COLOR_SUCCESS
 
     elif result_type == 'connection_failed':
         action.connection_text = STATE_CONNECTION_FAILED.text
         action.connection_color = STATE_CONNECTION_FAILED.color
         # Use specific error message if provided, otherwise generic message
-        error_msg = result[1] if len(result) > 1 and result[1] else "Failed to connect to Meshtastic device"
+        error_msg = result[1] if len(result) > 1 and result[1] else f"Failed to connect to {RADIO_NAME} device"
         action.log_messages.append((error_msg, COLOR_ERROR))
 
     elif result_type == 'connection_error':
@@ -155,7 +162,7 @@ def process_result(result: tuple) -> ResultAction:
     elif result_type == 'connection_initializing':
         # Device is still initializing - show informational message
         action.log_messages.append(("Device is initializing, please wait...", COLOR_WARNING))
-        action.connection_text = 'Meshtastic: Initializing...'
+        action.connection_text = f'{RADIO_NAME}: Initializing...'
         action.connection_color = COLOR_WARNING
 
     elif result_type == 'log':
@@ -205,8 +212,9 @@ def process_result(result: tuple) -> ResultAction:
     return action
 
 
-def validate_send_inputs(dest: str, tx_hex: str, has_iface: bool, dry_run: bool = False,
-                        own_node_id: Optional[str] = None) -> Optional[str]:
+def validate_send_inputs(dest: str, tx_hex: str, has_transport: bool, dry_run: bool = False,
+                        own_node_id: Optional[str] = None,
+                        transport_class=None) -> Optional[str]:
     """Validate the inputs for sending a transaction.
 
     This is a pure function that validates inputs without touching the GUI.
@@ -214,18 +222,22 @@ def validate_send_inputs(dest: str, tx_hex: str, has_iface: bool, dry_run: bool 
     Args:
         dest: The destination node ID
         tx_hex: The raw transaction hex (already cleaned of whitespace)
-        has_iface: Whether the Meshtastic interface is connected
-        dry_run: Whether this is a dry run (skips Meshtastic connection check)
+        has_transport: Whether the radio is connected
+        dry_run: Whether this is a dry run (skips the radio connection check)
         own_node_id: The node ID of the connected device (for self-send check)
+        transport_class: Transport class whose node ID format applies.
+            Defaults to the configured transport.
 
     Returns:
         An error message string if validation fails, or None if inputs are valid
     """
+    transport_class = transport_class or TRANSPORT_CLASS
+
     if not dest:
         return "Enter destination node ID"
 
-    if not dest.startswith('!'):
-        return "Destination must start with '!'"
+    if not transport_class.is_valid_node_id(dest):
+        return transport_class.invalid_node_id_message
 
     # Check for sending to own node
     if own_node_id and dest.lower() == own_node_id.lower():
@@ -240,8 +252,8 @@ def validate_send_inputs(dest: str, tx_hex: str, has_iface: bool, dry_run: bool 
     if not is_valid_hex(tx_hex):
         return "Invalid hex characters"
 
-    if not has_iface and not dry_run:
-        return "Meshtastic not connected"
+    if not has_transport and not dry_run:
+        return NOT_CONNECTED_ERROR
 
     return None
 
@@ -273,7 +285,7 @@ class BTCMeshGUI(BoxLayout):
         self.padding = 15
         self.spacing = 20
 
-        self.iface = None
+        self.transport = None
         self.send_thread = None
         self.result_queue = queue.Queue()
         self.abort_requested = False
@@ -339,7 +351,7 @@ class BTCMeshGUI(BoxLayout):
 
         # TextInput for destination (manual entry or selected from dropdown)
         self.dest_input = TextInput(
-            hint_text='!node_id',
+            hint_text=TRANSPORT_CLASS.node_id_hint,
             multiline=False,
             size_hint_x=0.4,
             background_color=COLOR_BG_LIGHT,
@@ -439,56 +451,35 @@ class BTCMeshGUI(BoxLayout):
         Clock.schedule_once(lambda dt: self._scan_devices(), 1)
 
     def _scan_devices(self):
-        """Scan for available Meshtastic devices in background."""
+        """Scan for available radio devices in background."""
         self.device_spinner.text = SCANNING_TEXT
-        self.status_log.add_message("Scanning for Meshtastic devices...")
+        self.status_log.add_message(f"Scanning for {RADIO_NAME} devices...")
 
         def scan_thread():
-            devices = scan_meshtastic_devices()
+            devices = list_devices()
             self.result_queue.put(('devices_found', devices))
 
         threading.Thread(target=scan_thread, daemon=True).start()
 
-    def _init_meshtastic(self, port=None):
-        """Initialize Meshtastic interface in background.
+    def _init_radio(self, port=None):
+        """Connect to the radio in background.
 
         Args:
             port: Optional device path to connect to. If None, uses auto-detect.
         """
-        self.status_log.add_message(f"Connecting to Meshtastic device{f' ({port})' if port else ''}...")
+        self.status_log.add_message(f"Connecting to {RADIO_NAME} device{f' ({port})' if port else ''}...")
 
         def init_thread():
             try:
-                import meshtastic.serial_interface
-
-                iface = (
-                    meshtastic.serial_interface.SerialInterface(devPath=port)
-                    if port
-                    else meshtastic.serial_interface.SerialInterface()
+                transport = open_transport(port=port)
+                self.result_queue.put(
+                    ('connected', transport, transport.own_node_id(), transport.own_node_name())
                 )
-
-                # Validate we got valid device info
-                node_id = None
-                if hasattr(iface, 'myInfo') and iface.myInfo and hasattr(iface.myInfo, 'my_node_num'):
-                    node_id = f"!{iface.myInfo.my_node_num:x}"
-
-                if not node_id or not node_id.startswith('!'):
-                    # Interface created but device info invalid - likely no device connected
-                    try:
-                        iface.close()
-                    except Exception:
-                        pass
-                    self.result_queue.put(('connection_failed', "Could not retrieve device info. Ensure device is connected.", None))
-                    return
-
-                node_name = get_own_node_name(iface)
-                self.result_queue.put(('connected', iface, node_id, node_name))
-
             except ImportError:
-                self.result_queue.put(('connection_error', "Meshtastic library not installed", None))
+                self.result_queue.put(('connection_error', f"{RADIO_NAME} library not installed", None))
             except Exception as e:
                 error_msg = str(e)
-                # Check if this is a transient error from the Meshtastic library still initializing
+                # Check if this is a transient error from the radio library still initializing
                 is_transient = any(x in error_msg.lower() for x in [
                     'resource temporarily unavailable',
                     'busy',
@@ -496,29 +487,33 @@ class BTCMeshGUI(BoxLayout):
                 if is_transient:
                     # Show as info message - device is still initializing
                     self.result_queue.put(('connection_initializing', error_msg, None))
-                else:
-                    # Provide more helpful error messages for common cases
-                    if "No Meshtastic" in error_msg or "No serial" in error_msg:
-                        error_msg = "No Meshtastic device found"
-                    elif "Permission denied" in error_msg:
-                        error_msg = f"Permission denied accessing {port or 'device'}"
-                    elif "could not open port" in error_msg.lower():
-                        error_msg = f"Could not open port {port or '(auto-detect)'}"
-                    self.result_queue.put(('connection_error', error_msg, None))
+                    return
+                if "could not retrieve device info" in error_msg:
+                    self.result_queue.put(('connection_failed', "Could not retrieve device info. Ensure device is connected.", None))
+                    return
+                # Provide more helpful error messages for common cases
+                error_msg = TRANSPORT_CLASS.describe_connect_error(e)
+                if f"No {RADIO_NAME} device found" in error_msg or "No serial" in error_msg:
+                    error_msg = f"No {RADIO_NAME} device found"
+                elif "Permission denied" in error_msg:
+                    error_msg = f"Permission denied accessing {port or 'device'}"
+                elif "could not open port" in error_msg.lower():
+                    error_msg = f"Could not open port {port or '(auto-detect)'}"
+                self.result_queue.put(('connection_error', error_msg, None))
 
         threading.Thread(target=init_thread, daemon=True).start()
 
     def _disconnect_device(self):
-        """Disconnect current Meshtastic interface and reset connection status."""
-        if self.iface:
-            # Close interface in background thread to avoid blocking main thread
-            # (iface.close() can block if device is in a bad state)
-            iface_to_close = self.iface
-            self.iface = None
+        """Disconnect the current radio and reset connection status."""
+        if self.transport:
+            # Close in background thread to avoid blocking main thread
+            # (close() can block if device is in a bad state)
+            transport_to_close = self.transport
+            self.transport = None
 
             def close_thread():
                 try:
-                    iface_to_close.close()
+                    transport_to_close.close()
                 except Exception:
                     pass
 
@@ -536,7 +531,7 @@ class BTCMeshGUI(BoxLayout):
             return
 
         self._disconnect_device()
-        self._init_meshtastic(port=text)
+        self._init_radio(port=text)
 
     def on_refresh_devices(self, instance):
         """Handle refresh button press to rescan devices."""
@@ -564,13 +559,13 @@ class BTCMeshGUI(BoxLayout):
 
     def _update_known_nodes(self):
         """Update the known nodes dropdown from the connected interface."""
-        if not self.iface:
+        if not self.transport:
             self.node_spinner.values = [NO_NODES_TEXT]
             self.node_spinner.text = NO_NODES_TEXT
             self.known_nodes = []
             return
 
-        nodes = get_known_nodes(self.iface)
+        nodes = self.transport.known_nodes()
         self.known_nodes = nodes
 
         if not nodes:
@@ -602,11 +597,15 @@ class BTCMeshGUI(BoxLayout):
             devices = result[1]
             if devices:
                 self.device_spinner.values = devices
-                if len(devices) == 1:
-                    # Auto-select and connect to single device
+                configured = get_serial_port(RADIO_NAME.lower())
+                if len(devices) == 1 or devices[0] == configured:
+                    # Auto-select and connect to the configured or only device
+                    self.device_spinner.unbind(text=self.on_device_selected)
                     self.device_spinner.text = devices[0]
-                    self.status_log.add_message(f"Found 1 device: {devices[0]}", COLOR_SUCCESS)
-                    self._init_meshtastic(port=devices[0])
+                    self.device_spinner.bind(text=self.on_device_selected)
+                    source = "configured" if devices[0] == configured else "found"
+                    self.status_log.add_message(f"Using {source} device: {devices[0]}", COLOR_SUCCESS)
+                    self._init_radio(port=devices[0])
                 else:
                     # Multiple devices - show first but don't connect, let user choose
                     # Unbind to prevent auto-connect when setting text
@@ -617,7 +616,7 @@ class BTCMeshGUI(BoxLayout):
             else:
                 self.device_spinner.values = [NO_DEVICES_TEXT]
                 self.device_spinner.text = NO_DEVICES_TEXT
-                self.status_log.add_message("No Meshtastic devices found", COLOR_ERROR)
+                self.status_log.add_message(f"No {RADIO_NAME} devices found", COLOR_ERROR)
             return
 
         action = process_result(result)
@@ -628,16 +627,16 @@ class BTCMeshGUI(BoxLayout):
         if action.connection_color is not None:
             self.connection_label.color = action.connection_color
 
-        # Store interface if provided
-        if action.store_iface is not None:
-            self.iface = action.store_iface
+        # Store transport if provided
+        if action.store_transport is not None:
+            self.transport = action.store_transport
 
         # Add log messages first (before _update_known_nodes which also logs)
         for msg, color in action.log_messages:
             self.status_log.add_message(msg, color)
 
         # Fetch known nodes AFTER connection success message is logged
-        if action.store_iface is not None:
+        if action.store_transport is not None:
             self._update_known_nodes()
 
         # Handle state changes
@@ -652,18 +651,8 @@ class BTCMeshGUI(BoxLayout):
             self._show_success_popup(action.show_success_popup)
 
     def _get_own_node_id(self) -> Optional[str]:
-        """Get the node ID of the connected Meshtastic device.
-
-        Returns:
-            Node ID string (e.g., '!abcd1234') or None if not connected.
-        """
-        if not self.iface or not self.iface.myInfo:
-            return None
-        try:
-            node_num = self.iface.myInfo.my_node_num
-            return f"!{node_num:08x}"
-        except (AttributeError, TypeError):
-            return None
+        """Get the node ID of the connected radio, or None if not connected."""
+        return self.transport.own_node_id() if self.transport else None
 
     def _set_controls_enabled(self, enabled: bool):
         """Enable or disable input controls during transaction send.
@@ -696,13 +685,13 @@ class BTCMeshGUI(BoxLayout):
         tx_hex = self.tx_input.text.strip().replace('\n', '').replace(' ', '')
         dry_run = self.dry_run_toggle.state == 'down'
 
-        # Validation (dry_run skips Meshtastic connection check)
+        # Validation (dry_run skips the radio connection check)
         own_node_id = self._get_own_node_id()
-        error = validate_send_inputs(dest, tx_hex, bool(self.iface), dry_run, own_node_id=own_node_id)
+        error = validate_send_inputs(dest, tx_hex, bool(self.transport), dry_run, own_node_id=own_node_id)
         if error:
             self.status_log.add_message(f"Error: {error}", COLOR_ERROR)
-            if error == "Meshtastic not connected":
-                self._init_meshtastic()
+            if error == NOT_CONNECTED_ERROR:
+                self._init_radio()
             return
 
         # Start sending
@@ -778,7 +767,7 @@ class BTCMeshGUI(BoxLayout):
                 self.result_queue.put(('aborted',))
                 return
 
-            # Run cli_main with our injected logger and interface
+            # Run cli_main with our injected logger and transport
             print_capture = PrintCapture(self.result_queue)
             original_stdout = sys.stdout
 
@@ -786,7 +775,7 @@ class BTCMeshGUI(BoxLayout):
                 sys.stdout = print_capture
                 exit_code = cli_main(
                     args=args,
-                    injected_iface=self.iface,
+                    injected_transport=self.transport,
                     injected_logger=gui_logger
                 )
             finally:
@@ -926,9 +915,9 @@ class BTCMeshApp(App):
 
     def on_stop(self):
         """Cleanup on app close."""
-        if hasattr(self.root, 'iface') and self.root.iface:
+        if getattr(self.root, 'transport', None):
             try:
-                self.root.iface.close()
+                self.root.transport.close()
             except Exception:
                 pass
 

@@ -44,6 +44,27 @@ def get_meshtastic_serial_port() -> Optional[str]:
     return os.getenv("MESHTASTIC_SERIAL_PORT")
 
 
+def get_transport_type() -> str:
+    """
+    Radio transport to use ('meshtastic' or 'meshcore'), from BTCMESH_TRANSPORT.
+    Defaults to 'meshtastic'.
+    """
+    if not dotenv_loaded:
+        load_app_config()
+    return (os.getenv("BTCMESH_TRANSPORT") or "meshtastic").strip().lower()
+
+
+def get_serial_port(transport_type: Optional[str] = None) -> Optional[str]:
+    """
+    Serial port for the given transport type (defaults to the configured one).
+    Reads <TRANSPORT>_SERIAL_PORT, e.g. MESHTASTIC_SERIAL_PORT or MESHCORE_SERIAL_PORT.
+    """
+    if not dotenv_loaded:
+        load_app_config()
+    kind = (transport_type or get_transport_type()).upper()
+    return os.getenv(f"{kind}_SERIAL_PORT")
+
+
 def load_bitcoin_rpc_config():
     """
     Loads Bitcoin RPC config from environment variables (.env).

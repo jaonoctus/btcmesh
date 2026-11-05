@@ -62,6 +62,12 @@ from core.gui_common import (
 import btcmesh_server
 from core.logger_setup import server_logger
 from core.config_loader import load_app_config
+from core.transport import get_transport_class, scan_devices
+
+# Radio transport configured for this run (BTCMESH_TRANSPORT)
+TRANSPORT_CLASS = get_transport_class()
+RADIO_NAME = TRANSPORT_CLASS.name
+SERIAL_PORT_ENV_KEY = f"{RADIO_NAME.upper()}_SERIAL_PORT"
 from core.transaction_history import TransactionHistory
 
 
@@ -128,8 +134,8 @@ def parse_log_for_status(message: str, level: int = None):  # noqa: ARG001
         error = match.group(1) if match else "Connection failed"
         return ('rpc_failed', error)
 
-    # Meshtastic status
-    if "Meshtastic interface initialized successfully" in message:
+    # Radio status (log lines come from core.transport.connect_transport)
+    if re.search(r'\w+ interface initialized successfully', message):
         # Extract device path from "Device: /dev/ttyUSB0"
         device_match = re.search(r'Device: ([^,]+)', message)
         device = device_match.group(1).strip() if device_match else None
@@ -139,23 +145,22 @@ def parse_log_for_status(message: str, level: int = None):  # noqa: ARG001
         # Extract node ID from "My Node Num: !abcdef12"
         node_match = re.search(r'My Node Num: (!?[0-9a-fA-F]+)', message)
         node_id = node_match.group(1) if node_match else None
-        # If we don't have a valid node_id, treat as failed connection
-        if not node_id or not node_id.startswith('!'):
+        if not node_id or not TRANSPORT_CLASS.is_valid_node_id(node_id):
             return ('meshtastic_failed', "Invalid device info")
         return ('meshtastic_connected', {'node_id': node_id, 'device': device})
-    if "Failed to initialize Meshtastic interface" in message:
-        return ('meshtastic_failed', "Could not initialize Meshtastic")
-    if "Meshtastic interface created but could not retrieve device info" in message:
+    if re.search(r'Failed to initialize \w+ interface', message):
+        return ('meshtastic_failed', f"Could not initialize {RADIO_NAME}")
+    if "interface created but could not retrieve device info" in message:
         return ('meshtastic_failed', "No device connected")
-    if "No Meshtastic device found" in message:
+    if re.search(r'No \w+ device found', message):
         return ('meshtastic_failed', "No device found")
 
     # Server running status
-    if "Registered Meshtastic message handler. Waiting for messages" in message:
+    if re.search(r'Registered \w+ message handler\. Waiting for messages', message):
         return ('server_started', None)
     if "Stop signal received. Shutting down" in message:
         return ('server_stopping', None)
-    if "Closing Meshtastic interface" in message:
+    if re.search(r'Closing \w+ interface', message):
         return ('server_stopped', None)
 
     # PubSub errors
@@ -230,7 +235,7 @@ class BTCMeshServerGUI(BoxLayout):
         self.add_widget(create_separator())
 
         # Meshtastic Device Settings section
-        self.add_widget(create_section_label('Meshtastic Settings:'))
+        self.add_widget(create_section_label(f'{RADIO_NAME} Settings:'))
         self._build_meshtastic_settings()
 
         # Orange separator line after Meshtastic settings
@@ -283,7 +288,7 @@ class BTCMeshServerGUI(BoxLayout):
 
         # Meshtastic status row
         meshtastic_row, self.meshtastic_label = create_status_row(
-            'Meshtastic:',
+            f'{RADIO_NAME}:',
             'Not connected',
             initial_color=COLOR_DISCONNECTED
         )
@@ -502,12 +507,12 @@ class BTCMeshServerGUI(BoxLayout):
         self.add_widget(settings_container)
 
     def _build_meshtastic_settings(self):
-        """Build the Meshtastic device settings section."""
+        """Build the radio device settings section."""
         import os
 
         # Load default from environment
         load_app_config()
-        default_device = os.getenv("MESHTASTIC_SERIAL_PORT", "")
+        default_device = os.getenv(SERIAL_PORT_ENV_KEY, "")
 
         settings_container = BoxLayout(orientation='horizontal', size_hint_y=None, height=40, spacing=5)
 
@@ -588,19 +593,18 @@ class BTCMeshServerGUI(BoxLayout):
         self.add_widget(controls_section)
 
     def _on_scan_devices(self, instance):
-        """Scan for available Meshtastic devices."""
+        """Scan for available radio devices."""
         self.device_spinner.text = DEVICE_SCANNING
         self.scan_btn.disabled = True
 
         def scan_thread():
-            from core.meshtastic_utils import scan_meshtastic_devices
-            devices = scan_meshtastic_devices()
+            devices = scan_devices()
             self.result_queue.put(('devices_found', devices))
 
         threading.Thread(target=scan_thread, daemon=True).start()
 
     def _set_meshtastic_settings_enabled(self, enabled: bool):
-        """Enable or disable Meshtastic device settings."""
+        """Enable or disable radio device settings."""
         self.device_spinner.disabled = not enabled
         self.scan_btn.disabled = not enabled
 
@@ -701,13 +705,13 @@ class BTCMeshServerGUI(BoxLayout):
             'REASSEMBLY_TIMEOUT_SECONDS': self.timeout_input.text.strip(),
         }
 
-        # Handle Meshtastic device - only save if not Auto-detect
+        # Handle radio device - only save if not Auto-detect
         selected_device = self.device_spinner.text
         if selected_device and selected_device not in (DEVICE_AUTO_DETECT, DEVICE_SCANNING, DEVICE_NO_DEVICES):
-            settings['MESHTASTIC_SERIAL_PORT'] = selected_device
+            settings[SERIAL_PORT_ENV_KEY] = selected_device
         else:
             # Mark for removal if currently set
-            settings['MESHTASTIC_SERIAL_PORT'] = None
+            settings[SERIAL_PORT_ENV_KEY] = None
 
         try:
             # Read existing .env content (preserving structure)
@@ -903,7 +907,7 @@ class BTCMeshServerGUI(BoxLayout):
             else:
                 self.device_spinner.values = [DEVICE_AUTO_DETECT]
                 self.device_spinner.text = DEVICE_AUTO_DETECT
-                self.status_log.add_message("No Meshtastic devices found", COLOR_WARNING)
+                self.status_log.add_message(f"No {RADIO_NAME} devices found", COLOR_WARNING)
 
         elif result_type == 'active_sessions':
             # Update the active sessions display

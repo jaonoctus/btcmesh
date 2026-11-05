@@ -4,7 +4,7 @@ Version 1.0 — February 2026
 
 ## Overview
 
-BTCMesh uses a stop-and-wait ARQ protocol to reliably transmit Bitcoin raw transactions over LoRa Meshtastic direct messages. Transactions are chunked into small pieces that fit within LoRa payload limits, sent one at a time with acknowledgment, and reassembled by the server for broadcast to the Bitcoin network.
+BTCMesh uses a stop-and-wait ARQ protocol to reliably transmit Bitcoin raw transactions over LoRa mesh direct messages (Meshtastic or MeshCore). Transactions are chunked into small pieces that fit within LoRa payload limits, sent one at a time with acknowledgment, and reassembled by the server for broadcast to the Bitcoin network.
 
 ## Protocol Flow
 
@@ -75,13 +75,13 @@ Reports an error during reassembly, validation, or broadcast.
 
 **Example:** `BTC_NACK|a1b2c|ERROR|Insufficient fee`
 
-Total NACK message length is capped at 200 characters to fit LoRa payload constraints.
+Total NACK message length is capped at 200 characters (150 on MeshCore) to fit LoRa payload constraints.
 
 ## Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| Chunk size | 170 hex chars (85 bytes) | Maximum hex payload per chunk |
+| Chunk size | 170 hex chars (85 bytes) on Meshtastic, 120 (60 bytes) on MeshCore | Maximum hex payload per chunk |
 | Session ID length | 5 hex chars | Random UUID-derived identifier |
 | ACK timeout | 30 seconds | Client waits this long for server ACK |
 | Retry timeout | 10 seconds | Client waits before retrying |
@@ -135,13 +135,22 @@ For reassembly errors (InvalidChunkFormat, MismatchedTotalChunks), the error typ
 
 ## Chunk Sizing
 
-Each Meshtastic text message has a payload limit. The chunk format includes overhead:
+Each radio text message has a payload limit (about 228 bytes on Meshtastic, 160 on MeshCore). The chunk format includes overhead:
 
 ```
 BTC_TX|<5 chars>|<digits>/<digits>|<payload>
 ```
 
-With a 5-char session ID and typical chunk numbering (e.g. `12/15`), overhead is ~20 characters. The 170 hex-char payload keeps total message size well within Meshtastic payload limits.
+With a 5-char session ID and typical chunk numbering (e.g. `12/15`), overhead is ~20 characters. The 170 hex-char payload keeps total message size well within Meshtastic payload limits; MeshCore uses 120 hex chars per chunk for the same reason. The receiver does not need to know the chunk size: it reassembles whatever payload sizes arrive.
+
+## Node IDs
+
+The protocol messages never contain node IDs; sessions are keyed by the sender ID the radio reports. Its format depends on the transport:
+
+| Transport | Node ID format | Example |
+|-----------|----------------|---------|
+| Meshtastic | `!` + 8 hex digits | `!a1b2c3d4` |
+| MeshCore | First 6 bytes of the public key, as 12 hex digits | `a1b2c3d4e5f6` |
 
 ## Multiple Concurrent Sessions
 

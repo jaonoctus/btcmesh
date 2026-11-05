@@ -2,13 +2,13 @@
 
 ## Description
 
-BTC Mesh Relay is a project designed to enable the broadcasting of Bitcoin raw transactions by sending them as chunked hexadecimal strings via LoRa Meshtastic direct messages. A dedicated client script (`btcmesh_cli.py`) will be used for sending, and a relay device running `btcmesh_server.py` will reassemble these chunks, decode, validate, and then relay the complete transaction to a configured Bitcoin RPC node. This system is intended for scenarios with limited or censored internet access but where LoRa Meshtastic network availability exists.
+BTC Mesh Relay is a project designed to enable the broadcasting of Bitcoin raw transactions by sending them as chunked hexadecimal strings via LoRa mesh direct messages, over either [Meshtastic](https://meshtastic.org) or [MeshCore](https://meshcore.co.uk). A dedicated client script (`btcmesh_cli.py`) will be used for sending, and a relay device running `btcmesh_server.py` will reassemble these chunks, decode, validate, and then relay the complete transaction to a configured Bitcoin RPC node. This system is intended for scenarios with limited or censored internet access but where a LoRa mesh network is available.
 
 This project is currently under development.
 
 ## Features (Planned & In-Progress)
 
-*   **Meshtastic Communication**: Initializes and manages communication with a Meshtastic device.
+*   **Meshtastic and MeshCore Support**: Talks to either radio through a common transport layer (`core/transport/`); pick one with `BTCMESH_TRANSPORT`.
 *   **Transaction Chunking & Reassembly**: Allows large Bitcoin transactions to be sent in smaller chunks over LoRa by `btcmesh_cli.py` and reassembled by `btcmesh_server.py`.
 *   **Payload Handling**: Relay server reassembles hexadecimal chunks. The connected Bitcoin Core node performs full transaction validation upon broadcast attempt. (Advanced pre-broadcast decoding and validation capabilities on the relay server via `core/transaction_parser.py` are planned for future enhancements).
 *   **Basic Transaction Validation**: Currently, the relay server relies on the connected Bitcoin Core node for most transaction validation. (More extensive pre-broadcast sanity checks on the relay are planned).
@@ -31,6 +31,10 @@ btcmesh/
 │   ├── gui_common.py      # Shared GUI components and styling
 │   ├── logger_setup.py    # For setting up consistent logging
 │   ├── meshtastic_utils.py # Meshtastic device utilities
+│   ├── transport/         # Radio transports (one per mesh firmware)
+│   │   ├── base.py        # Transport interface used by server, CLI and GUIs
+│   │   ├── meshtastic_transport.py
+│   │   └── meshcore_transport.py
 │   ├── transaction_parser.py # For decoding raw Bitcoin transactions (Planned)
 │   ├── rpc_client.py      # For interacting with Bitcoin RPC
 │   └── reassembler.py     # For reassembling chunked messages
@@ -79,9 +83,20 @@ btcmesh/
     ```
     Then, edit the `.env` file to set your specific configurations. For example:
 
+    *   **`BTCMESH_TRANSPORT`**: Which mesh firmware your radio runs: `meshtastic` (default) or `meshcore`. The client and the relay must use the same one.
+        ```env
+        # BTCMESH_TRANSPORT=meshcore
+        ```
     *   **`MESHTASTIC_SERIAL_PORT`**: Specifies the serial port for your Meshtastic device (e.g., `/dev/ttyUSB0`, `/dev/ttyACM0` on Linux, or `COM3` on Windows). If this is not set or is commented out, the application will attempt to auto-detect the Meshtastic device.
         ```env
         # MESHTASTIC_SERIAL_PORT=/dev/your/meshtastic_port
+        ```
+    *   **`MESHCORE_SERIAL_PORT`**: Device for a MeshCore companion radio. A serial port (`/dev/ttyACM0`, `COM3`), `tcp:<host>:<port>` for a WiFi companion, or `ble:<address>` for Bluetooth. If unset, the only USB serial device present is used.
+        ```env
+        # MESHCORE_SERIAL_PORT=/dev/ttyACM0
+        # MESHCORE_AUTO_ADD_CONTACTS=true   # add nodes we hear adverts from as contacts
+        # MESHCORE_ADVERT_ON_CONNECT=true   # send a flood advert on connect so peers can add us
+        # MESHCORE_BLE_PIN=123456           # pairing PIN, if your BLE companion asks for one
         ```
     *   **Bitcoin RPC Node Details**: Required for the relay server (`btcmesh_server.py`).
         ```env
@@ -98,9 +113,10 @@ btcmesh/
         BITCOIN_RPC_HOST=yourbitcoinrpcnode.onion
         ```
 
-5.  **Meshtastic Device Setup**:
-    *   Ensure you have a Meshtastic device connected to the machine where `btcmesh_server.py` will run (and another for the client when `btcmesh_cli.py` is used).
-    *   The Meshtastic Python library, by default, attempts to auto-detect your device. You can specify the serial port explicitly by setting `MESHTASTIC_SERIAL_PORT` in your `.env` file.
+5.  **Radio Setup**:
+    *   Ensure you have a radio connected to the machine where `btcmesh_server.py` will run (and another for the client when `btcmesh_cli.py` is used).
+    *   **Meshtastic**: the Meshtastic Python library attempts to auto-detect your device. You can specify the serial port explicitly by setting `MESHTASTIC_SERIAL_PORT` in your `.env` file.
+    *   **MeshCore**: flash both radios with MeshCore *companion* firmware (USB serial, WiFi or BLE). See [MeshCore notes](#meshcore-notes) below.
     *   Ensure your Bitcoin Core node is configured to accept RPC connections.
     *   Configure the RPC host, port, user, and password in your `.env` file (see step 4).
     *   **Tor Connectivity**: If `BITCOIN_RPC_HOST` is a `.onion` address, you must have Tor installed and running on your system. See [Tor Setup](#tor-setup) for installation instructions.
@@ -111,7 +127,8 @@ The primary method for configuration is via a `.env` file in the project root (s
 
 Key settings configurable in `.env`:
 
-*   Meshtastic device serial port (`MESHTASTIC_SERIAL_PORT`).
+*   Radio firmware (`BTCMESH_TRANSPORT`: `meshtastic` or `meshcore`).
+*   Meshtastic device serial port (`MESHTASTIC_SERIAL_PORT`), or MeshCore device (`MESHCORE_SERIAL_PORT`, `MESHCORE_AUTO_ADD_CONTACTS`, `MESHCORE_ADVERT_ON_CONNECT`).
 *   Bitcoin RPC connection details (`BITCOIN_RPC_HOST`, `BITCOIN_RPC_PORT`, `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD`). Use a `.onion` address for `BITCOIN_RPC_HOST` to route traffic through Tor (requires Tor to be installed and running).
 *   Transaction reassembly timeout (`REASSEMBLY_TIMEOUT_SECONDS`).
 
@@ -123,7 +140,7 @@ Once set up and configured, you can run the BTC Mesh Relay server:
 python btcmesh_server.py
 ```
 
-The server will initialize the Meshtastic interface, connect to the Bitcoin RPC node (if configured), and start listening for incoming messages.
+The server will initialize the radio interface, connect to the Bitcoin RPC node (if configured), and start listening for incoming messages.
 
 ## Running the Client (`btcmesh_cli.py`)
 
@@ -132,13 +149,22 @@ The client script is used to send a raw Bitcoin transaction to a relay server.
 ```bash
 python btcmesh_cli.py --destination <SERVER_NODE_ID> --tx <RAW_TRANSACTION_HEX>
 ```
-Replace `<SERVER_NODE_ID>` with the Meshtastic node ID of the machine running `btcmesh_server.py` (e.g., `!abcdef12`) and `<RAW_TRANSACTION_HEX>` with the full raw transaction hex string you intend to broadcast.
+Replace `<SERVER_NODE_ID>` with the node ID of the relay running `btcmesh_server.py` (Meshtastic: e.g. `!abcdef12`; MeshCore: the first 12 hex characters of the relay's public key, e.g. `a1b2c3d4e5f6`, which the server logs on startup as `My Node Num`) and `<RAW_TRANSACTION_HEX>` with the full raw transaction hex string you intend to broadcast.
 
-Use `python btcmesh_cli.py --help` for more options, such as `--dry-run` to simulate sending without actually transmitting over LoRa.
+Use `python btcmesh_cli.py --help` for more options, such as `--dry-run` to simulate sending without actually transmitting over LoRa, or `--transport meshcore --port /dev/ttyACM0` to override the `.env` settings.
+
+## MeshCore Notes
+
+MeshCore works differently from Meshtastic in a few ways that affect BTCMesh:
+
+*   **Contacts are required.** MeshCore only exchanges direct messages between contacts, so the relay and the client must each have the other as a contact. On connect, BTCMesh sends a flood advert (disable with `MESHCORE_ADVERT_ON_CONNECT=false`) and adds nodes it hears adverts from as contacts (disable with `MESHCORE_AUTO_ADD_CONTACTS=false`). The first transaction may fail with "not in this MeshCore device's contacts" until the two nodes have heard each other's adverts; you can also add the contact with the MeshCore app.
+*   **Node IDs are public key prefixes**, 12 hex characters (e.g. `a1b2c3d4e5f6`), instead of `!abcdef12`.
+*   **Smaller messages.** MeshCore text messages hold about 160 bytes, so transactions are split into 120 hex char chunks (Meshtastic uses 170) and NACK messages are capped at 150 characters.
+*   **Repeaters.** MeshCore companion radios do not relay other nodes' traffic. For multi-hop range you need MeshCore repeater nodes between the client and the relay.
 
 ## Running the Client GUI (`btcmesh_gui.py`)
 
-The GUI provides a user-friendly graphical interface for sending Bitcoin transactions over the Meshtastic LoRa mesh network. It wraps the CLI with visual feedback and easy-to-use controls.
+The GUI provides a user-friendly graphical interface for sending Bitcoin transactions over a LoRa mesh network (Meshtastic or MeshCore, as set by `BTCMESH_TRANSPORT`; labels in both GUIs follow that setting). It wraps the CLI with visual feedback and easy-to-use controls.
 
 ### Starting the Client GUI
 
@@ -173,7 +199,7 @@ python btcmesh_gui.py
 
 1. **Select your Meshtastic device** - Use the device dropdown to select from available devices. Click "Scan" to refresh the list.
 
-2. **Select or enter destination** - Choose a known node from the dropdown or manually type the relay server's Meshtastic node ID (e.g., `!abcdef12`).
+2. **Select or enter destination** - Choose a known node from the dropdown or manually type the relay server's node ID (e.g., `!abcdef12` for Meshtastic, `a1b2c3d4e5f6` for MeshCore).
 
 3. **Enter transaction hex** - Paste your raw Bitcoin transaction hex string or use the "Paste" button to paste from clipboard.
 

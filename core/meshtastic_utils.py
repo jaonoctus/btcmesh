@@ -7,6 +7,8 @@ functions used by CLI, GUI, and server components.
 """
 from typing import Optional, List, Dict
 
+from core.transport.base import format_node_display  # noqa: F401 (re-exported)
+
 
 def scan_meshtastic_devices() -> List[str]:
     """Scan for available Meshtastic devices.
@@ -133,18 +135,6 @@ def get_known_nodes(iface, exclude_own: bool = True) -> List[Dict]:
     nodes.sort(key=lambda n: n['lastHeard'], reverse=True)
 
     return nodes
-
-
-def format_node_display(node: Dict) -> str:
-    """Format a node dict for display in a dropdown or list.
-
-    Args:
-        node: Dict with keys: id, name, lastHeard, is_recent
-
-    Returns:
-        Formatted string: 'Name (!nodeid)'
-    """
-    return f"{node['name']} ({node['id']})"
 
 
 def get_node_by_id(iface, node_id: str) -> Optional[Dict]:
